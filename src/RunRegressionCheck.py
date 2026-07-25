@@ -36,6 +36,7 @@ import shlex
 import subprocess
 import sys
 from dataclasses import asdict
+import glob
 
 import diff_engine
 
@@ -71,8 +72,16 @@ def git_checkout(ref: str) -> None:
         raise RuntimeError(f"git checkout {ref} failed: {result.stderr}")
 
 
-def run_build(build_cmd: str) -> None:
-    result = subprocess.run(shlex.split(build_cmd), capture_output=True, text=True, check=False)
+def run_build(build_cmd: str):
+    parts = shlex.split(build_cmd, posix=False)  # posix=False preserves backslashes if you still use them
+    expanded = []
+    for part in parts:
+        if "*" in part:
+            matches = glob.glob(part)
+            expanded.extend(matches if matches else [part])
+        else:
+            expanded.append(part)
+    result = subprocess.run(expanded, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         raise RuntimeError(f"Build command failed: {build_cmd}\n{result.stderr}")
 
