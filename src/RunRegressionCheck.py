@@ -40,7 +40,7 @@ from typing import Optional
 # Config - adjust to match your repo layout
 # ---------------------------------------------------------------------------
 REPO_DIR = Path(__file__).resolve().parent
-JAVA_SRC_DIR = REPO_DIR / "src"
+JAVA_SRC_DIR = REPO_DIR
 BUILD_DIR = REPO_DIR / "out"
 METRICS_MARKER = "=== METRICS_JSON ==="
 
