@@ -29,6 +29,7 @@ Assumptions (tell me if wrong):
 """
 
 import argparse
+import difflib
 import json
 import subprocess
 import sys
@@ -91,6 +92,60 @@ def compute_diff(baseline: str, feature: str, scope_dir: Optional[str] = None) -
         args += ["--", scope_dir]
     result = run_git(*args)
     return result.stdout
+
+
+def get_changed_files(baseline: str, feature: str, scope_dir: Optional[str] = None) -> list:
+    args = ["diff", "--name-only", f"{baseline}..{feature}"]
+    if scope_dir:
+        args += ["--", scope_dir]
+    result = run_git(*args)
+    return [line for line in result.stdout.splitlines() if line.strip()]
+
+
+def get_file_at_ref(ref: str, path: str) -> list:
+    """Returns the file's lines at a given ref, or [] if it didn't exist there (added/deleted file)."""
+    result = run_git("show", f"{ref}:{path}", check=False)
+    if result.returncode != 0:
+        return []
+    return result.stdout.splitlines()
+
+
+def generate_html_diff_report(baseline: str, feature: str, scope_dir: Optional[str] = None) -> str:
+    """
+    Builds a PR-style, side-by-side HTML diff report: one before/after
+    table per changed file, changed lines highlighted, unchanged
+    stretches collapsed - same idea as GitHub/GitLab's diff view.
+    """
+    changed_files = get_changed_files(baseline, feature, scope_dir)
+    if not changed_files:
+        return "<html><body><p>No changed files between the two refs" + \
+               (f" under {scope_dir}" if scope_dir else "") + ".</p></body></html>"
+
+    differ = difflib.HtmlDiff(wrapcolumn=90)
+    sections = []
+    for path in changed_files:
+        before_lines = get_file_at_ref(baseline, path)
+        after_lines = get_file_at_ref(feature, path)
+        table = differ.make_table(
+            before_lines, after_lines,
+            fromdesc=f"{baseline}:{path}", todesc=f"{feature}:{path}",
+            context=True, numlines=3,
+        )
+        sections.append(f"<h2>{path}</h2>\n{table}")
+
+    style = """
+    <style>
+        body { font-family: -apple-system, Segoe UI, sans-serif; margin: 24px; background: #f6f8fa; }
+        h2 { font-size: 15px; font-family: monospace; margin-top: 32px; padding: 8px; background: #eaecef; border-radius: 4px; }
+        table.diff { width: 100%; border-collapse: collapse; font-family: Consolas, monospace; font-size: 13px; background: white; }
+        .diff_header { background: #f0f0f0; color: #666; }
+        .diff_next { background: #f0f0f0; }
+        td.diff_add { background: #e6ffed; }
+        td.diff_sub { background: #ffeef0; }
+        td.diff_chg { background: #fff5b1; }
+    </style>
+    """
+    return f"<html><head><meta charset='utf-8'>{style}</head><body>{''.join(sections)}</body></html>"
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +215,7 @@ def main():
     parser.add_argument("--threads", type=int, default=None, help="Thread count arg to pass through")
     parser.add_argument("--classpath", default=None, help="Java classpath to run with (default: the compiled BUILD_DIR)")
     parser.add_argument("--diff-dir", default=None, help="Scope the code diff to this directory (relative to repo root). If omitted, diffs all files.")
+    parser.add_argument("--html-diff-out", default=None, help="If set, write a PR-style side-by-side HTML diff report to this path")
     parser.add_argument("--out", default=None, help="Optional path to also write JSON output to a file")
     args = parser.parse_args()
 
@@ -185,6 +241,11 @@ def main():
     output_json = json.dumps(output, indent=2)
 
     print(output_json)  # stdout - this is what a downstream script/LLM pipe consumes
+
+    if args.html_diff_out:
+        html_report = generate_html_diff_report(args.main, args.feature, scope_dir=args.diff_dir)
+        Path(args.html_diff_out).write_text(html_report, encoding="utf-8")
+        print(f"[info] wrote HTML diff report to {args.html_diff_out}", file=sys.stderr)
 
     if args.out:
         Path(args.out).write_text(output_json)
