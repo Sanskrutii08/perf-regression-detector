@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-RunRegressionCheck.py
+branch_metrics_runner.py
 
 Checks out the main (baseline) branch first, builds and runs the Java
 aggregator to capture its JVM metrics, then checks out the feature branch
@@ -9,7 +9,7 @@ to the LLM alongside a code diff and retrieved incidents (handled by
 other scripts in the pipeline).
 
 Usage:
-    python RunRegressionCheck.py --main main --feature feature-branch \
+    python branch_metrics_runner.py --main main --feature feature-branch \
         --main-class LogAggregatorV2InMemory --log sample.log --threads 8
 
 Output:
@@ -94,8 +94,10 @@ def compile_java() -> None:
         raise RuntimeError(f"javac failed:\n{result.stderr}")
 
 
-def run_aggregator(main_class: str, log_path: Path, num_threads: Optional[int]) -> str:
-    cmd = f'java -cp "{args.class_path}" {args.main_class} {args.log} {args.threads}'
+def run_aggregator(main_class: str, log_path: Path, num_threads: Optional[int],
+                    classpath: Optional[str] = None) -> str:
+    cp = classpath if classpath else str(BUILD_DIR)
+    cmd = ["java", "-cp", cp, main_class, str(log_path)]
     if num_threads is not None:
         cmd.append(str(num_threads))
 
@@ -119,10 +121,11 @@ def parse_metrics(stdout: str) -> dict:
         raise RuntimeError(f"Could not parse METRICS_JSON block: {e}\nRaw:\n{json_part}")
 
 
-def run_for_ref(ref: str, main_class: str, log_path: Path, num_threads: Optional[int]) -> RunResult:
+def run_for_ref(ref: str, main_class: str, log_path: Path, num_threads: Optional[int],
+                 classpath: Optional[str] = None) -> RunResult:
     checkout(ref)
     compile_java()
-    stdout = run_aggregator(main_class, log_path, num_threads)
+    stdout = run_aggregator(main_class, log_path, num_threads, classpath=classpath)
     metrics = parse_metrics(stdout)
     return RunResult(ref=ref, metrics=metrics)
 
@@ -135,9 +138,9 @@ def main():
     parser.add_argument("--main", default="main", help="Baseline branch/tag to run first (default: main)")
     parser.add_argument("--feature", required=True, help="Feature branch/tag to run second")
     parser.add_argument("--main-class", required=True, help="Entry point class, e.g. LogAggregatorV2InMemory")
-    parser.add_argument("--class-path", required=True, help="Class path")
     parser.add_argument("--log", default="sample.log", help="Path to the log file to process")
     parser.add_argument("--threads", type=int, default=None, help="Thread count arg to pass through")
+    parser.add_argument("--classpath", default=None, help="Java classpath to run with (default: the compiled BUILD_DIR)")
     parser.add_argument("--out", default=None, help="Optional path to also write JSON output to a file")
     args = parser.parse_args()
 
@@ -149,8 +152,8 @@ def main():
     log_path = (REPO_DIR / args.log).resolve()
 
     try:
-        main_result = run_for_ref(args.main, args.main_class, log_path, args.threads)
-        feature_result = run_for_ref(args.feature, args.main_class, log_path, args.threads)
+        main_result = run_for_ref(args.main, args.main_class, log_path, args.threads, classpath=args.classpath)
+        feature_result = run_for_ref(args.feature, args.main_class, log_path, args.threads, classpath=args.classpath)
     finally:
         # always return to whatever branch you started on, even on failure
         checkout(original_ref)
