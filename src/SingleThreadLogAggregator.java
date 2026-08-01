@@ -35,7 +35,7 @@ public class SingleThreadLogAggregator {
 
         long elapsedMs = (System.nanoTime() - start) / 1_000_000;
 
-        ReportPrinter.print(statsByService, totalLines, elapsedMs, "V1 (single-threaded)");
+        ReportPrinter.print(statsByService, totalLines, elapsedMs, "V1 (single-threaded)",null);
     }
 
     private static void processLine(String line, Map<String,ServiceStats> statsByService) {
