@@ -95,7 +95,7 @@ def compile_java() -> None:
 
 
 def run_aggregator(main_class: str, log_path: Path, num_threads: Optional[int]) -> str:
-    cmd = ["java", "-cp", str(BUILD_DIR), main_class, str(log_path)]
+    cmd = f'java -cp "{args.class_path}" {args.main_class} {args.log} {args.threads}'
     if num_threads is not None:
         cmd.append(str(num_threads))
 
@@ -135,6 +135,7 @@ def main():
     parser.add_argument("--main", default="main", help="Baseline branch/tag to run first (default: main)")
     parser.add_argument("--feature", required=True, help="Feature branch/tag to run second")
     parser.add_argument("--main-class", required=True, help="Entry point class, e.g. LogAggregatorV2InMemory")
+    parser.add_argument("--class-path", required=True, help="Class path")
     parser.add_argument("--log", default="sample.log", help="Path to the log file to process")
     parser.add_argument("--threads", type=int, default=None, help="Thread count arg to pass through")
     parser.add_argument("--out", default=None, help="Optional path to also write JSON output to a file")
