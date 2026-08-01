@@ -11,9 +11,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
+import java.util.concurrent.*;
 
 /**
  * V2 - multithreaded, chunked processing.
@@ -81,7 +79,7 @@ public class MultiThreadLogAggregator {
         System.out.printf("[timing] worker processing + merge: %d ms%n", (t3 - t2) / 1_000_000);
         System.out.println();
 
-        ReportPrinter.print(merged, totalLines, overallElapsedMs, "V2 (multithreaded, " + numThreads + " threads)");
+        ReportPrinter.print(merged, totalLines, overallElapsedMs, "V2 (multithreaded, " + numThreads + " threads)",(ThreadPoolExecutor) pool);
     }
 
     /**
