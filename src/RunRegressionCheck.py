@@ -47,7 +47,8 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from ChromaStore import query_similar
+from chroma_store import query_similar
+from llm_analyzer import analyze as llm_analyze, resolve_client_and_model, PROVIDERS
 
 # ---------------------------------------------------------------------------
 # Config - adjust to match your repo layout
@@ -258,6 +259,9 @@ def main():
     parser.add_argument("--diff-context", type=int, default=3, help="Number of unchanged context lines around each diff hunk (default: 3)")
     parser.add_argument("--top-k", type=int, default=3, help="Max number of similar past incidents to retrieve (default: 3)")
     parser.add_argument("--min-similarity", type=float, default=0.5, help="Minimum cosine similarity for a retrieved incident to be included (default: 0.5)")
+    parser.add_argument("--analyze", action="store_true", help="Also run the two-pass LLM analysis on this run's output (requires an API key for --provider)")
+    parser.add_argument("--provider", choices=list(PROVIDERS.keys()) + ["custom"], default="gemini", help="LLM provider to use if --analyze is set (default: gemini)")
+    parser.add_argument("--model", default=None, help="Override the provider's default model (for --analyze)")
     parser.add_argument("--out", default=None, help="Optional path to also write JSON output to a file")
     args = parser.parse_args()
 
@@ -304,6 +308,29 @@ def main():
         "retrieved_incidents": retrieved_incidents,
     }
     output_json = json.dumps(output, indent=2)
+
+    if args.analyze:
+        try:
+            class _AnalyzeArgs:
+                provider = args.provider
+                model = args.model
+                base_url = None
+                api_key_env = None
+
+            client, model = resolve_client_and_model(_AnalyzeArgs())
+            llm_result = llm_analyze(output, client, model)
+            output["llm_analysis"] = llm_result
+            output_json = json.dumps(output, indent=2)
+
+            print(f"\n=== PASS 1: BLIND HYPOTHESIS ({model}) ===", file=sys.stderr)
+            print(llm_result["pass1_blind_hypothesis"], file=sys.stderr)
+            print(f"\n=== PASS 2: FINAL ANALYSIS ({model}) ===", file=sys.stderr)
+            print(llm_result["pass2_final_analysis"], file=sys.stderr)
+        except (RuntimeError, ValueError) as e:
+            # Don't let a missing/misconfigured LLM provider take down a run
+            # that otherwise succeeded - metrics/diff/retrieval are still
+            # valid and useful even without the LLM step.
+            print(f"[warn] skipping LLM analysis: {e}", file=sys.stderr)
 
     print(output_json)  # stdout - this is what a downstream script/LLM pipe consumes
 
