@@ -1,36 +1,29 @@
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.RandomAccessFile;
-import java.nio.channels.Channels;
-import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ThreadPoolExecutor;
 
 /**
- * V2 - multithreaded, chunked processing.
+ * V2 variant - in-memory processing.
  *
- * The file is split into N byte-range chunks, aligned to line boundaries
- * so no line is ever split across two threads. Each worker thread reads
- * only its own chunk and builds its OWN private Map<String, ServiceStats> -
- * there is no shared mutable state and therefore no locking during the hot
- * path. Partial results are merged single-threaded at the very end, once
- * all workers are done.
+ * Reads the entire file into a byte[] ONCE on the main thread, then has
+ * worker threads process disjoint, line-aligned ranges of that SAME
+ * in-memory array in parallel. No thread ever touches the disk after the
+ * initial read - this isolates whether the disk-based V2 was bottlenecked
+ * by concurrent file I/O contention rather than by the actual
+ * parsing/aggregation work itself.
  *
- * This "local-then-merge" pattern is deliberate: it is the correct way to
- * parallelize this kind of aggregation, and it is also the pattern a later
- * "regression" version could break - e.g. by replacing per-thread local
- * maps with one shared map guarded by a single global lock, which would
- * serialize the workers and tank throughput despite the pool still being
- * multithreaded on paper.
+ * The byte[] is only ever read, never written, by the worker threads, so
+ * sharing it across threads is safe without any synchronization.
  *
- * Usage: java LogAggregatorV2 <path-to-log-file> [num-threads]
+ * Usage: java LogAggregatorV2InMemory <path-to-log-file> [num-threads]
  */
 public class MultiThreadLogAggregator {
 
@@ -40,32 +33,32 @@ public class MultiThreadLogAggregator {
 
         long overallStart = System.nanoTime();
 
-        File file = new File(path);
-        long fileSize = file.length();
-
         long t0 = System.nanoTime();
-        long[] boundaries = computeChunkBoundaries(file, fileSize, numThreads);
+        byte[] data = Files.readAllBytes(Path.of(path));
         long t1 = System.nanoTime();
+
+        int[] boundaries = computeChunkBoundaries(data, numThreads);
+        long t2 = System.nanoTime();
 
         ExecutorService pool = Executors.newFixedThreadPool(numThreads);
         List<Future<Map<String, ServiceStats>>> futures = new ArrayList<>();
 
         for (int i = 0; i < numThreads; i++) {
-            final long chunkStart = boundaries[i];
-            final long chunkEnd = boundaries[i + 1];
-            futures.add(pool.submit(() -> processChunk(path, chunkStart, chunkEnd)));
+            final int chunkStart = boundaries[i];
+            final int chunkEnd = boundaries[i + 1];
+            futures.add(pool.submit(() -> processChunk(data, chunkStart, chunkEnd)));
         }
 
-        long t2 = System.nanoTime(); // all tasks submitted, workers running now
+        long t3 = System.nanoTime(); // all tasks submitted, workers running now
 
         Map<String, ServiceStats> merged = new HashMap<>();
         for (Future<Map<String, ServiceStats>> future : futures) {
-            Map<String, ServiceStats> local = future.get(); // blocks until that worker is done
+            Map<String, ServiceStats> local = future.get();
             for (Map.Entry<String, ServiceStats> e : local.entrySet()) {
                 merged.computeIfAbsent(e.getKey(), k -> new ServiceStats()).merge(e.getValue());
             }
         }
-        long t3 = System.nanoTime(); // all workers finished + merged
+        long t4 = System.nanoTime(); // all workers finished + merged
 
         pool.shutdown();
 
@@ -74,69 +67,52 @@ public class MultiThreadLogAggregator {
 
         long overallElapsedMs = (System.nanoTime() - overallStart) / 1_000_000;
 
-        System.out.printf("[timing] boundary computation: %d ms%n", (t1 - t0) / 1_000_000);
-        System.out.printf("[timing] pool creation + submit: %d ms%n", (t2 - t1) / 1_000_000);
-        System.out.printf("[timing] worker processing + merge: %d ms%n", (t3 - t2) / 1_000_000);
+        System.out.printf("[timing] file read into memory: %d ms%n", (t1 - t0) / 1_000_000);
+        System.out.printf("[timing] boundary computation: %d ms%n", (t2 - t1) / 1_000_000);
+        System.out.printf("[timing] pool creation + submit: %d ms%n", (t3 - t2) / 1_000_000);
+        System.out.printf("[timing] worker processing + merge: %d ms%n", (t4 - t3) / 1_000_000);
         System.out.println();
 
-        ReportPrinter.print(merged, totalLines, overallElapsedMs, "V2 (multithreaded, " + numThreads + " threads)",(ThreadPoolExecutor) pool);
+        ReportPrinter.print(merged, totalLines, overallElapsedMs, "V2-in-memory (" + numThreads + " threads)", (ThreadPoolExecutor)(pool));
     }
 
-    /**
-     * Finds byte offsets that divide the file into roughly equal chunks,
-     * nudging each boundary forward to the start of the next full line so
-     * a chunk never begins mid-line.
-     */
-    private static long[] computeChunkBoundaries(File file, long fileSize, int numChunks) throws IOException {
-        long[] boundaries = new long[numChunks + 1];
+    /** Same idea as the disk version's boundary finder, but operating on the in-memory array. */
+    private static int[] computeChunkBoundaries(byte[] data, int numChunks) {
+        int[] boundaries = new int[numChunks + 1];
         boundaries[0] = 0;
-        boundaries[numChunks] = fileSize;
+        boundaries[numChunks] = data.length;
 
-        try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
-            for (int i = 1; i < numChunks; i++) {
-                long approx = (fileSize * i) / numChunks;
-                raf.seek(approx);
-                long pos = approx;
-                int b;
-                while ((b = raf.read()) != -1 && b != '\n') {
-                    pos++;
-                }
-                boundaries[i] = pos + 1; // start right after the newline
+        for (int i = 1; i < numChunks; i++) {
+            int approx = (int) (((long) data.length * i) / numChunks);
+            int pos = approx;
+            while (pos < data.length && data[pos] != '\n') {
+                pos++;
             }
+            boundaries[i] = Math.min(pos + 1, data.length);
         }
         return boundaries;
     }
 
-    /**
-     * Reads and aggregates only this thread's byte range into a local, unshared map.
-     *
-     * IMPORTANT: this uses a buffered stream on top of the file channel, NOT
-     * RandomAccessFile.readLine(). RandomAccessFile's own readLine() reads one
-     * byte at a time under the hood - for a multi-MB file that turns into
-     * millions of tiny reads and completely dominates the runtime, making the
-     * "multithreaded" version slower than a plain BufferedReader despite the
-     * parallelism. Wrapping the channel in a BufferedReader restores normal
-     * chunked I/O (default 8KB buffer) so the threads are actually
-     * CPU/parse-bound instead of I/O-call-bound.
-     */
-    private static Map<String, ServiceStats> processChunk(String path, long start, long end) throws IOException {
+    /** Scans this thread's byte range directly, with zero disk access - the array is already in RAM. */
+    private static Map<String, ServiceStats> processChunk(byte[] data, int start, int end) {
         Map<String, ServiceStats> localStats = new HashMap<>();
 
-        try (RandomAccessFile raf = new RandomAccessFile(path, "r");
-             FileChannel channel = raf.getChannel()) {
-
-            channel.position(start);
-            InputStream in = Channels.newInputStream(channel);
-            BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8), 1 << 16);
-
-            long bytesRead = 0;
-            long chunkSize = end - start;
-            String line;
-            while (bytesRead < chunkSize && (line = reader.readLine()) != null) {
-                bytesRead += line.length() + 1; // +1 for the newline; log lines are plain ASCII
-                processLine(line, localStats);
+        int lineStart = start;
+        for (int i = start; i < end; i++) {
+            if (data[i] == '\n') {
+                if (i > lineStart) {
+                    String line = new String(data, lineStart, i - lineStart, StandardCharsets.UTF_8);
+                    processLine(line, localStats);
+                }
+                lineStart = i + 1;
             }
         }
+        // handle a trailing line with no newline at the very end of the chunk, if any
+        if (lineStart < end) {
+            String line = new String(data, lineStart, end - lineStart, StandardCharsets.UTF_8);
+            processLine(line, localStats);
+        }
+
         return localStats;
     }
 
