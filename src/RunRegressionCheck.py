@@ -4,9 +4,10 @@ branch_metrics_runner.py
 
 Checks out the main (baseline) branch first, builds and runs the Java
 aggregator to capture its JVM metrics, then checks out the feature branch
-and does the same. Outputs both metric sets plus a raw code diff as JSON
-so they can be passed to the LLM alongside retrieved incidents (handled
-by other scripts in the pipeline).
+and does the same. Outputs both metric sets, a raw code diff, and a
+regression signature vector (for incident similarity search) as JSON so
+they can be passed to the LLM alongside retrieved incidents (handled by
+other scripts in the pipeline).
 
 Usage:
     python branch_metrics_runner.py --main main --feature feature-branch \
@@ -17,7 +18,9 @@ Output:
     {
       "main":    { "ref": "main", "metrics": {...} },
       "feature": { "ref": "feature-branch", "metrics": {...} },
-      "diff": "<raw unified diff text>"
+      "diff": "<raw unified diff text>",
+      "vector": [0.99, -0.85, 0.0, ...],
+      "vector_schema_version": 1
     }
 
 Assumptions (tell me if wrong):
@@ -31,11 +34,12 @@ Assumptions (tell me if wrong):
 
 import argparse
 import json
+import math
 import subprocess
 import sys
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional
 
 # ---------------------------------------------------------------------------
 # Config - adjust to match your repo layout
@@ -44,6 +48,39 @@ REPO_DIR = Path(__file__).resolve().parent
 JAVA_SRC_DIR = REPO_DIR
 BUILD_DIR = REPO_DIR / "out"
 METRICS_MARKER = "=== METRICS_JSON ==="
+
+# ---------------------------------------------------------------------------
+# Regression signature vector schema (versioned - bump if this changes)
+# ---------------------------------------------------------------------------
+# Order matters - this IS the vector layout. Do not reorder without
+# bumping VECTOR_SCHEMA_VERSION, or old stored incident vectors become
+# silently incomparable to new ones.
+VECTOR_SCHEMA_VERSION = 1
+
+DIMENSIONS = [
+    "elapsed_ms",
+    "throughput_lps",
+    "gc_pause_ms",
+    "gc_count",
+    "heap_usage_pct",
+    "blocked_threads",
+    "waiting_threads",
+    "cpu_pct",
+]
+
+# "What counts as a big relative change" per dimension - a relative_delta
+# equal to SCALE_CONSTANTS[dim] maps to tanh(1) ~= 0.76. Placeholders -
+# tune against your real historical incidents once you have a few.
+SCALE_CONSTANTS = {
+    "elapsed_ms": 0.5,
+    "throughput_lps": 0.5,
+    "gc_pause_ms": 1.0,
+    "gc_count": 1.0,
+    "heap_usage_pct": 0.3,
+    "blocked_threads": 1.0,
+    "waiting_threads": 1.0,
+    "cpu_pct": 0.5,
+}
 
 
 @dataclass
@@ -153,6 +190,51 @@ def run_for_ref(ref: str, main_class: str, log_path: Path, num_threads: Optional
     return RunResult(ref=ref, metrics=metrics)
 
 
+def _relative_delta(baseline_val: float, feature_val: float) -> float:
+    """
+    (feature - baseline) / baseline, with a zero-baseline guard.
+
+    If baseline is 0 (e.g. blocked_threads was 0 and is now 3), a plain
+    relative delta is undefined. We fall back to treating any nonzero
+    feature value as a full-scale change (1.0), since there's no
+    meaningful percentage to compute from zero.
+    """
+    if baseline_val == 0:
+        return 1.0 if feature_val != 0 else 0.0
+    return (feature_val - baseline_val) / baseline_val
+
+
+def metrics_to_vector(baseline_metrics: Dict, feature_metrics: Dict) -> List[float]:
+    """
+    Converts a (baseline, feature) metrics pair into the fixed-length
+    regression signature vector used for incident similarity search.
+
+    Each dimension is tanh(relative_delta / scale_constant):
+      - relative_delta captures direction + magnitude of change
+      - scale_constant calibrates what counts as "big" per metric
+      - tanh bounds the result to [-1, 1] so one extreme metric doesn't
+        dominate cosine similarity against the rest
+
+    Direction is intentionally NOT normalized to "bad = positive" - this
+    vector describes the shape of what changed, not a good/bad score.
+
+    Raises KeyError if either metrics dict is missing a required
+    dimension, rather than silently defaulting to 0.
+    """
+    vector = []
+    for dim in DIMENSIONS:
+        if dim not in baseline_metrics:
+            raise KeyError(f"baseline_metrics missing required dimension: {dim}")
+        if dim not in feature_metrics:
+            raise KeyError(f"feature_metrics missing required dimension: {dim}")
+
+        rel_delta = _relative_delta(baseline_metrics[dim], feature_metrics[dim])
+        scaled = rel_delta / SCALE_CONSTANTS[dim]
+        vector.append(math.tanh(scaled))
+
+    return vector
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -187,6 +269,8 @@ def main():
         "main": asdict(main_result),
         "feature": asdict(feature_result),
         "diff": compute_diff(args.main, args.feature, scope_dir=args.diff_dir, context_lines=args.diff_context),
+        "vector": metrics_to_vector(main_result.metrics, feature_result.metrics),
+        "vector_schema_version": VECTOR_SCHEMA_VERSION,
     }
     output_json = json.dumps(output, indent=2)
 
