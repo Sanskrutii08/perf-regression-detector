@@ -5,6 +5,7 @@ out/
 .kotlin
 __pycache__/
 *.py[cod]
+chroma_data/
 
 ### Eclipse ###
 .apt_generated
