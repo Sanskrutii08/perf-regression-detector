@@ -4,9 +4,9 @@ branch_metrics_runner.py
 
 Checks out the main (baseline) branch first, builds and runs the Java
 aggregator to capture its JVM metrics, then checks out the feature branch
-and does the same. Outputs both metric sets as JSON so they can be passed
-to the LLM alongside a code diff and retrieved incidents (handled by
-other scripts in the pipeline).
+and does the same. Outputs both metric sets plus a raw code diff as JSON
+so they can be passed to the LLM alongside retrieved incidents (handled
+by other scripts in the pipeline).
 
 Usage:
     python branch_metrics_runner.py --main main --feature feature-branch \
@@ -16,7 +16,8 @@ Output:
     Prints a JSON object to stdout:
     {
       "main":    { "ref": "main", "metrics": {...} },
-      "feature": { "ref": "feature-branch", "metrics": {...} }
+      "feature": { "ref": "feature-branch", "metrics": {...} },
+      "diff": "<raw unified diff text>"
     }
 
 Assumptions (tell me if wrong):
@@ -76,18 +77,40 @@ def current_branch() -> str:
     return run_git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
 
 
+def compute_diff(baseline: str, feature: str, scope_dir: Optional[str] = None,
+                  context_lines: int = 3) -> str:
+    """
+    Returns the raw unified diff between baseline and feature.
+
+    If scope_dir is given, the diff is limited to files under that
+    directory (relative to the repo root) - useful for excluding test
+    files, generated code, or unrelated modules from what gets passed
+    to the LLM. If scope_dir is None, returns the full diff across
+    every changed file between the two refs.
+
+    context_lines controls how many unchanged lines git includes around
+    each change (git's own default is 3).
+    """
+    args = ["diff", f"-U{context_lines}", f"{baseline}..{feature}"]
+    if scope_dir:
+        args += ["--", scope_dir]
+    result = run_git(*args)
+    return result.stdout
+
+
 # ---------------------------------------------------------------------------
 # Build + run
 # ---------------------------------------------------------------------------
-def compile_java() -> None:
-    print("[build] compiling Java sources...", file=sys.stderr)
+def compile_java(classpath: Optional[str] = None) -> None:
+    out_dir = Path(classpath) if classpath else BUILD_DIR
+    print(f"[build] compiling Java sources into {out_dir} ...", file=sys.stderr)
     java_files = [str(p) for p in JAVA_SRC_DIR.rglob("*.java")]
     if not java_files:
         raise RuntimeError(f"No .java files found under {JAVA_SRC_DIR}")
 
-    BUILD_DIR.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(
-        ["javac", "-d", str(BUILD_DIR), *java_files],
+        ["javac", "-d", str(out_dir), *java_files],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
@@ -124,7 +147,7 @@ def parse_metrics(stdout: str) -> dict:
 def run_for_ref(ref: str, main_class: str, log_path: Path, num_threads: Optional[int],
                  classpath: Optional[str] = None) -> RunResult:
     checkout(ref)
-    compile_java()
+    compile_java(classpath=classpath)
     stdout = run_aggregator(main_class, log_path, num_threads, classpath=classpath)
     metrics = parse_metrics(stdout)
     return RunResult(ref=ref, metrics=metrics)
@@ -141,6 +164,8 @@ def main():
     parser.add_argument("--log", default="sample.log", help="Path to the log file to process")
     parser.add_argument("--threads", type=int, default=None, help="Thread count arg to pass through")
     parser.add_argument("--classpath", default=None, help="Java classpath to run with (default: the compiled BUILD_DIR)")
+    parser.add_argument("--diff-dir", default=None, help="Scope the code diff to this directory (relative to repo root). If omitted, diffs all files.")
+    parser.add_argument("--diff-context", type=int, default=3, help="Number of unchanged context lines around each diff hunk (default: 3)")
     parser.add_argument("--out", default=None, help="Optional path to also write JSON output to a file")
     args = parser.parse_args()
 
@@ -161,6 +186,7 @@ def main():
     output = {
         "main": asdict(main_result),
         "feature": asdict(feature_result),
+        "diff": compute_diff(args.main, args.feature, scope_dir=args.diff_dir, context_lines=args.diff_context),
     }
     output_json = json.dumps(output, indent=2)
 
