@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from ChromaStore import query_similar
-from LLM_Analyzer import analyze as llm_analyze, resolve_client_and_model, PROVIDERS
+# from LLM_Analyzer import analyze as llm_analyze, resolve_client_and_model, PROVIDERS
 
 # ---------------------------------------------------------------------------
 # Config - adjust to match your repo layout
