@@ -47,8 +47,8 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from chroma_store import query_similar
-from llm_analyzer import analyze as llm_analyze, resolve_client_and_model, PROVIDERS
+from ChromaStore import query_similar
+from LLM_Analyzer import analyze as llm_analyze, resolve_client_and_model, PROVIDERS
 
 # ---------------------------------------------------------------------------
 # Config - adjust to match your repo layout
