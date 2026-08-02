@@ -48,7 +48,6 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from ChromaStore import query_similar
-from LLM_Analyzer import analyze as llm_analyze, resolve_client_and_model, PROVIDERS
 
 # ---------------------------------------------------------------------------
 # Config - adjust to match your repo layout
@@ -248,6 +247,8 @@ def metrics_to_vector(baseline_metrics: Dict, feature_metrics: Dict) -> List[flo
 # Main
 # ---------------------------------------------------------------------------
 def main():
+    from LLM_Analyzer import analyze as llm_analyze, resolve_client_and_model, PROVIDERS
+
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--main", default="main", help="Baseline branch/tag to run first (default: main)")
     parser.add_argument("--feature", required=True, help="Feature branch/tag to run second")
