@@ -4,10 +4,10 @@ branch_metrics_runner.py
 
 Checks out the main (baseline) branch first, builds and runs the Java
 aggregator to capture its JVM metrics, then checks out the feature branch
-and does the same. Outputs both metric sets, a raw code diff, and a
-regression signature vector (for incident similarity search) as JSON so
-they can be passed to the LLM alongside retrieved incidents (handled by
-other scripts in the pipeline).
+and does the same. Outputs both metric sets, a raw code diff, a
+regression signature vector, and the top-k most similar past incidents
+retrieved from the Chroma incident store as JSON, ready to hand to the
+LLM.
 
 Usage:
     python branch_metrics_runner.py --main main --feature feature-branch \
@@ -20,7 +20,11 @@ Output:
       "feature": { "ref": "feature-branch", "metrics": {...} },
       "diff": "<raw unified diff text>",
       "vector": [0.99, -0.85, 0.0, ...],
-      "vector_schema_version": 1
+      "vector_schema_version": 1,
+      "retrieved_incidents": [
+        { "similarity": 0.81, "root_cause": "...", "fix": "...", "tags": [...] },
+        ...
+      ]
     }
 
 Assumptions (tell me if wrong):
@@ -30,6 +34,8 @@ Assumptions (tell me if wrong):
     JSON block, nothing else.
   - Repo root is this script's directory; .java sources live under "src".
     Adjust JAVA_SRC_DIR below if not.
+  - chroma_store.py's chroma_data/ directory (built by seed_incidents.py)
+    is present in the same directory as this script.
 """
 
 import argparse
@@ -40,6 +46,8 @@ import sys
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict, List, Optional
+
+from chroma_store import query_similar
 
 # ---------------------------------------------------------------------------
 # Config - adjust to match your repo layout
@@ -248,6 +256,8 @@ def main():
     parser.add_argument("--classpath", default=None, help="Java classpath to run with (default: the compiled BUILD_DIR)")
     parser.add_argument("--diff-dir", default=None, help="Scope the code diff to this directory (relative to repo root). If omitted, diffs all files.")
     parser.add_argument("--diff-context", type=int, default=3, help="Number of unchanged context lines around each diff hunk (default: 3)")
+    parser.add_argument("--top-k", type=int, default=3, help="Max number of similar past incidents to retrieve (default: 3)")
+    parser.add_argument("--min-similarity", type=float, default=0.5, help="Minimum cosine similarity for a retrieved incident to be included (default: 0.5)")
     parser.add_argument("--out", default=None, help="Optional path to also write JSON output to a file")
     args = parser.parse_args()
 
@@ -265,12 +275,33 @@ def main():
         # always return to whatever branch you started on, even on failure
         checkout(original_ref)
 
+    regression_vector = metrics_to_vector(main_result.metrics, feature_result.metrics)
+
+    # top-k similar past incidents, filtered by min_similarity - if
+    # nothing clears the threshold this is deliberately an empty list,
+    # not a forced weak match (see chroma_store.query_similar docstring)
+    retrieved = query_similar(regression_vector, top_k=args.top_k, min_similarity=args.min_similarity)
+    if retrieved:
+        print(f"[retrieval] found {len(retrieved)} similar incident(s) above similarity {args.min_similarity}", file=sys.stderr)
+    else:
+        print(f"[retrieval] no incidents found above similarity {args.min_similarity}", file=sys.stderr)
+    retrieved_incidents = [
+        {
+            "similarity": round(similarity, 4),
+            "root_cause": incident["root_cause"],
+            "fix": incident["fix"],
+            "tags": incident["tags"],
+        }
+        for similarity, incident in retrieved
+    ]
+
     output = {
         "main": asdict(main_result),
         "feature": asdict(feature_result),
         "diff": compute_diff(args.main, args.feature, scope_dir=args.diff_dir, context_lines=args.diff_context),
-        "vector": metrics_to_vector(main_result.metrics, feature_result.metrics),
+        "vector": regression_vector,
         "vector_schema_version": VECTOR_SCHEMA_VERSION,
+        "retrieved_incidents": retrieved_incidents,
     }
     output_json = json.dumps(output, indent=2)
 
