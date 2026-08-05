@@ -173,7 +173,7 @@ Then give a final root cause explanation (3-5 sentences) and a suggested fix, re
 def call_llm(client: OpenAI, model: str, prompt: str) -> str:
     response = client.chat.completions.create(
         model=model,
-        max_tokens=1024,
+        max_tokens=2048,
         messages=[{"role": "user", "content": prompt}],
     )
     return response.choices[0].message.content
