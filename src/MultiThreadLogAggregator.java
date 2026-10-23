@@ -23,9 +23,17 @@ import java.util.concurrent.ThreadPoolExecutor;
  * The byte[] is only ever read, never written, by the worker threads, so
  * sharing it across threads is safe without any synchronization.
  *
+ * REGRESSION EXAMPLE (reduced parallelism): the worker pool is capped at
+ * MAX_WORKERS regardless of the requested thread count. The file is still
+ * split into num-threads chunks and submitted to the pool, but they all
+ * queue up for a single worker, so the "multithreaded" code runs serially.
+ *
  * Usage: java LogAggregatorV2InMemory <path-to-log-file> [num-threads]
  */
 public class MultiThreadLogAggregator {
+
+    /** Upper bound on worker threads, to keep resource usage low on shared hosts. */
+    private static final int MAX_WORKERS = 1;
 
     public static void main(String[] args) throws Exception {
         String path = args.length > 0 ? args[0] : "sample.log";
@@ -40,7 +48,7 @@ public class MultiThreadLogAggregator {
         int[] boundaries = computeChunkBoundaries(data, numThreads);
         long t2 = System.nanoTime();
 
-        ExecutorService pool = Executors.newFixedThreadPool(numThreads);
+        ExecutorService pool = Executors.newFixedThreadPool(Math.min(numThreads, MAX_WORKERS));
         List<Future<Map<String, ServiceStats>>> futures = new ArrayList<>();
 
         for (int i = 0; i < numThreads; i++) {
