@@ -11,12 +11,12 @@ What the project does, in 10 points
 9. Shows everything on one web page: pick branches, press Run, see metrics (worse/better), incidents, the AI explanation and the diff. Built with core Java and plain HTML/CSS.
 10. Keeps working without the AI: with no API key, or if the LLM call fails, the metrics, diff and incidents are still shown. Keys stay in a git-ignored .env.
 
-![img.png](img.png)
+![img.png](web/images/img.png)
 
-![img_1.png](img_1.png)
+![img_1.png](web/images/img_1.png)
 
-![img_2.png](img_2.png)
+![img_2.png](web/images/img_2.png)
 
-![img_3.png](img_3.png)
+![img_3.png](web/images/img_3.png)
 
-![img_4.png](img_4.png)
+![img_4.png](web/images/img_4.png)
