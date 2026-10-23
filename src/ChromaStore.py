@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-chroma_store.py
+ChromaStore.py
 
 Chroma-backed incident store. Same interface as incident_store.py
 (add_incident / query_similar) so callers don't need to change - only
@@ -128,7 +128,7 @@ def query_similar(query_vector: List[float], top_k: int = 3,
 
 
 def wipe():
-    """Deletes the collection entirely (used by --wipe in seed_incidents.py)."""
+    """Deletes the collection entirely (used by --wipe in SeedIncidents.py)."""
     global _collection
     client = chromadb.PersistentClient(path=str(CHROMA_DATA_DIR))
     try:

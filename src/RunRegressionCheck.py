@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-branch_metrics_runner.py
+RunRegressionCheck.py
 
 Checks out the main (baseline) branch first, builds and runs the Java
 aggregator to capture its JVM metrics, then checks out the feature branch
@@ -10,8 +10,8 @@ retrieved from the Chroma incident store as JSON, ready to hand to the
 LLM.
 
 Usage:
-    python branch_metrics_runner.py --main main --feature feature-branch \
-        --main-class LogAggregatorV2InMemory --log sample.log --threads 8
+    python RunRegressionCheck.py --main main --feature feature-branch \
+        --main-class MultiThreadLogAggregator --log sample.log --threads 8
 
 Output:
     Prints a JSON object to stdout:
@@ -34,7 +34,7 @@ Assumptions (tell me if wrong):
     JSON block, nothing else.
   - Repo root is this script's directory; .java sources live under "src".
     Adjust JAVA_SRC_DIR below if not.
-  - chroma_store.py's chroma_data/ directory (built by seed_incidents.py)
+  - ChromaStore.py's chroma_data/ directory (built by SeedIncidents.py)
     is present in the same directory as this script.
 """
 
@@ -115,7 +115,8 @@ def checkout(ref: str) -> None:
 
 
 def current_ref_is_clean() -> bool:
-    return run_git("status", "--porcelain").stdout.strip() == ""
+    # untracked files (build output, local data) are ignored - they don't affect checkout
+    return run_git("status", "--porcelain", "--untracked-files=no").stdout.strip() == ""
 
 
 def current_branch() -> str:
@@ -250,7 +251,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--main", default="main", help="Baseline branch/tag to run first (default: main)")
     parser.add_argument("--feature", required=True, help="Feature branch/tag to run second")
-    parser.add_argument("--main-class", required=True, help="Entry point class, e.g. LogAggregatorV2InMemory")
+    parser.add_argument("--main-class", required=True, help="Entry point class, e.g. MultiThreadLogAggregator")
     parser.add_argument("--log", default="sample.log", help="Path to the log file to process")
     parser.add_argument("--threads", type=int, default=None, help="Thread count arg to pass through")
     parser.add_argument("--classpath", default=None, help="Java classpath to run with (default: the compiled BUILD_DIR)")
@@ -279,7 +280,7 @@ def main():
 
     # top-k similar past incidents, filtered by min_similarity - if
     # nothing clears the threshold this is deliberately an empty list,
-    # not a forced weak match (see chroma_store.query_similar docstring)
+    # not a forced weak match (see ChromaStore.query_similar docstring)
     retrieved = query_similar(regression_vector, top_k=args.top_k, min_similarity=args.min_similarity)
     if retrieved:
         print(f"[retrieval] found {len(retrieved)} similar incident(s) above similarity {args.min_similarity}", file=sys.stderr)

@@ -10,8 +10,8 @@ no LLM involved here, just measurement and thresholds.
 
 Usage:
     python3 diff_engine.py \
-        --baseline "java LogAggregatorV1 sample.log" \
-        --candidate "java LogAggregatorV2InMemory sample.log 8" \
+        --baseline "java -cp out MultiThreadLogAggregator sample.log 1" \
+        --candidate "java MultiThreadLogAggregator sample.log 8" \
         --runs 3 \
         --throughput-threshold 10 \
         --latency-threshold 10 \
@@ -31,7 +31,7 @@ from dataclasses import asdict, dataclass
 
 ELAPSED_RE = re.compile(r"Elapsed time:\s*(\d+)\s*ms")
 THROUGHPUT_RE = re.compile(r"Throughput:\s*(\d+)\s*lines/sec")
-TOTAL_LINES_RE = re.compile(r"Total lines processed:\s*(\d+)")
+TOTAL_LINES_RE = re.compile(r'"total_lines":\s*(\d+)')  # from ReportPrinter's METRICS_JSON block
 
 
 @dataclass
@@ -139,7 +139,7 @@ def main():
     )
     parser.add_argument(
         "--baseline", required=True,
-        help="Shell command for the baseline run, e.g. 'java LogAggregatorV1 sample.log'",
+        help="Shell command for the baseline run, e.g. 'java -cp out MultiThreadLogAggregator sample.log 1'",
     )
     parser.add_argument(
         "--candidate", required=True,
