@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-seed_incidents.py
+SeedIncidents.py
 
 Populates a Chroma collection with synthetic incident records built from
 general, textbook performance-regression patterns (lock contention, GC
@@ -14,8 +14,8 @@ Purpose: exercise the retrieval pipeline end-to-end (vector generation
 incident population, before real incident data exists.
 
 Run:
-    python seed_incidents.py            # appends 60 synthetic incidents
-    python seed_incidents.py --wipe     # clears the store first
+    python SeedIncidents.py            # appends 60 synthetic incidents
+    python SeedIncidents.py --wipe     # clears the store first
 """
 
 import argparse
@@ -181,7 +181,7 @@ def apply_pattern(base: dict, pattern: dict, severity: float, rng: random.Random
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--wipe", action="store_true", help="Clear incidents.jsonl before seeding")
+    parser.add_argument("--wipe", action="store_true", help="Clear the Chroma collection before seeding")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for jitter (default: 42)")
     args = parser.parse_args()
 
