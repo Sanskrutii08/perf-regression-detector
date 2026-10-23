@@ -33,3 +33,8 @@ bin/
 .DS_Store
 ### Java build output ###
 *.class
+
+### Local secrets (API keys) ###
+.env
+.env.*
+!.env.example
