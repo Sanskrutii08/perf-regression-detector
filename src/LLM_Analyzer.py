@@ -41,7 +41,9 @@ Usage:
 
 Each provider's API key is read from its own environment variable
 (see PROVIDERS below) so keys for multiple providers can coexist
-without collision.
+without collision. Keys can also be kept in a .env file at the repo
+root (copy .env.example to .env) - it is gitignored, and variables
+already set in the shell take precedence over it.
 """
 
 import argparse
@@ -49,9 +51,31 @@ import json
 import os
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from openai import OpenAI
+
+DOTENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+
+
+def load_dotenv(path: Path = DOTENV_PATH) -> None:
+    """
+    Minimal .env loader (KEY=value per line, # comments, optional quotes)
+    so API keys can live in a gitignored file instead of the shell or the
+    code. Never overrides a variable that is already set in the environment.
+    """
+    if not path.is_file():
+        return
+    for raw in path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip().removeprefix("export ").strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 # ---------------------------------------------------------------------------
 # Provider presets - base_url, default model, and which env var holds the
@@ -109,10 +133,12 @@ def resolve_client_and_model(args) -> tuple:
                 f"No default model for provider '{args.provider}' - pass --model explicitly"
             )
 
+    load_dotenv()
     api_key = os.environ.get(api_key_env)
     if not api_key:
         raise RuntimeError(
-            f"Environment variable {api_key_env} is not set (needed for provider '{args.provider}')"
+            f"{api_key_env} is not set - set it in your shell or in {DOTENV_PATH} "
+            f"(needed for provider '{args.provider}')"
         )
 
     client = OpenAI(api_key=api_key, base_url=base_url)
