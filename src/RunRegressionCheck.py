@@ -249,6 +249,7 @@ def metrics_to_vector(baseline_metrics: Dict, feature_metrics: Dict) -> List[flo
 # ---------------------------------------------------------------------------
 def main():
     from LLM_Analyzer import analyze as llm_analyze, resolve_client_and_model, PROVIDERS
+    from openai import OpenAIError
 
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--main", default="main", help="Baseline branch/tag to run first (default: main)")
@@ -328,8 +329,9 @@ def main():
             print(llm_result["pass1_blind_hypothesis"], file=sys.stderr)
             print(f"\n=== PASS 2: FINAL ANALYSIS ({model}) ===", file=sys.stderr)
             print(llm_result["pass2_final_analysis"], file=sys.stderr)
-        except (RuntimeError, ValueError) as e:
-            # Don't let a missing/misconfigured LLM provider take down a run
+        except (RuntimeError, ValueError, OpenAIError) as e:
+            # Don't let a missing/misconfigured LLM provider (or an API error
+            # such as a bad key, unknown model or rate limit) take down a run
             # that otherwise succeeded - metrics/diff/retrieval are still
             # valid and useful even without the LLM step.
             print(f"[warn] skipping LLM analysis: {e}", file=sys.stderr)
