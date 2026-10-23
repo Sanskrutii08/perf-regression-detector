@@ -197,12 +197,19 @@ Then give a final root cause explanation (3-5 sentences) and a suggested fix, re
 
 
 def call_llm(client: OpenAI, model: str, prompt: str) -> str:
+    # Generous limit: "thinking" models (e.g. Gemini 3.x) spend part of
+    # max_tokens on hidden reasoning, and 2048 cut answers off mid-sentence.
     response = client.chat.completions.create(
         model=model,
-        max_tokens=2048,
+        max_tokens=8192,
         messages=[{"role": "user", "content": prompt}],
     )
-    return response.choices[0].message.content
+    choice = response.choices[0]
+    content = choice.message.content or ""
+    if choice.finish_reason == "length":
+        print(f"[llm] warning: response from {model} hit the token limit and is incomplete", file=sys.stderr)
+        content += "\n\n[Response cut off at the token limit.]"
+    return content
 
 
 def analyze(run_output: dict, client: OpenAI, model: str) -> dict:
