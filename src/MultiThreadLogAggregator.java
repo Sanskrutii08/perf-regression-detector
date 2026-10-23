@@ -5,23 +5,17 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.ThreadPoolExecutor;
 
 /**
- * V2 variant - in-memory processing.
+ * V2 variant - in-memory processing, "simplified" to run without a thread pool.
  *
- * Reads the entire file into a byte[] ONCE on the main thread, then has
- * worker threads process disjoint, line-aligned ranges of that SAME
- * in-memory array in parallel. No thread ever touches the disk after the
- * initial read - this isolates whether the disk-based V2 was bottlenecked
- * by concurrent file I/O contention rather than by the actual
- * parsing/aggregation work itself.
+ * Reads the entire file into a byte[] ONCE, still splits it into the same
+ * line-aligned chunks, but then processes those chunks one after another on
+ * the main thread instead of handing them to worker threads.
  *
- * The byte[] is only ever read, never written, by the worker threads, so
- * sharing it across threads is safe without any synchronization.
+ * REGRESSION EXAMPLE (reduced parallelism): the work is identical to main,
+ * but only one core is ever used, so elapsed time grows roughly with the
+ * number of chunks and throughput drops, while CPU usage falls.
  *
  * Usage: java LogAggregatorV2InMemory <path-to-log-file> [num-threads]
  */
@@ -40,27 +34,21 @@ public class MultiThreadLogAggregator {
         int[] boundaries = computeChunkBoundaries(data, numThreads);
         long t2 = System.nanoTime();
 
-        ExecutorService pool = Executors.newFixedThreadPool(numThreads);
-        List<Future<Map<String, ServiceStats>>> futures = new ArrayList<>();
-
+        // Process the chunks sequentially on this thread - no worker pool.
+        List<Map<String, ServiceStats>> partials = new ArrayList<>();
         for (int i = 0; i < numThreads; i++) {
-            final int chunkStart = boundaries[i];
-            final int chunkEnd = boundaries[i + 1];
-            futures.add(pool.submit(() -> processChunk(data, chunkStart, chunkEnd)));
+            partials.add(processChunk(data, boundaries[i], boundaries[i + 1]));
         }
 
-        long t3 = System.nanoTime(); // all tasks submitted, workers running now
+        long t3 = System.nanoTime(); // all chunks processed
 
         Map<String, ServiceStats> merged = new HashMap<>();
-        for (Future<Map<String, ServiceStats>> future : futures) {
-            Map<String, ServiceStats> local = future.get();
+        for (Map<String, ServiceStats> local : partials) {
             for (Map.Entry<String, ServiceStats> e : local.entrySet()) {
                 merged.computeIfAbsent(e.getKey(), k -> new ServiceStats()).merge(e.getValue());
             }
         }
-        long t4 = System.nanoTime(); // all workers finished + merged
-
-        pool.shutdown();
+        long t4 = System.nanoTime(); // merged
 
         long totalLines = 0;
         for (ServiceStats s : merged.values()) totalLines += s.total;
@@ -69,11 +57,11 @@ public class MultiThreadLogAggregator {
 
         System.out.printf("[timing] file read into memory: %d ms%n", (t1 - t0) / 1_000_000);
         System.out.printf("[timing] boundary computation: %d ms%n", (t2 - t1) / 1_000_000);
-        System.out.printf("[timing] pool creation + submit: %d ms%n", (t3 - t2) / 1_000_000);
-        System.out.printf("[timing] worker processing + merge: %d ms%n", (t4 - t3) / 1_000_000);
+        System.out.printf("[timing] sequential chunk processing: %d ms%n", (t3 - t2) / 1_000_000);
+        System.out.printf("[timing] merge: %d ms%n", (t4 - t3) / 1_000_000);
         System.out.println();
 
-        ReportPrinter.print(merged, totalLines, overallElapsedMs, "V2-in-memory (" + numThreads + " threads)", (ThreadPoolExecutor)(pool));
+        ReportPrinter.print(merged, totalLines, overallElapsedMs, "V2-in-memory (single-threaded, " + numThreads + " chunks)", null);
     }
 
     /** Same idea as the disk version's boundary finder, but operating on the in-memory array. */
